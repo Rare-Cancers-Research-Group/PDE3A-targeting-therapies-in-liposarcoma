@@ -1,0 +1,272 @@
+---
+title: "R Notebook of LPS subtype DEG filtering based on IST reference"
+output:
+  html_notebook:
+    code_folding: hide
+---
+
+```{r Libraries, include=FALSE}
+library(tidyverse)
+library(edgeR)
+library(stringr)
+library(EnsDb.Hsapiens.v86)
+library(RColorBrewer)
+library(AnnotationHub)
+library(gplots)
+library(DelayedMatrixStats)
+library(biomaRt)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(umap)
+library(meshes)
+library(RSQLite)
+library(DT)
+source("../../generic code/AuxFunctions.R")
+```
+
+```{r Setting some variables}
+run.date <- "300922"
+```
+
+# Fetching IST data
+
+```{r Connecting to IST database}
+IST43.Db <- dbConnect(RSQLite::SQLite(),dbname="../../ist43.sqlite")
+```
+
+```{r Fetching relevant IST data}
+sample.grouping <- tbl(IST43.Db, "SampleGrouping") %>%  collect()
+group.classes <- tbl(IST43.Db, "GroupingClasses") %>%  collect()
+group.desc <- tbl(IST43.Db, "GroupDescription") %>%  collect()
+gene.annot <- tbl(IST43.Db, "GeneAnnotation") %>%  collect()
+eqmagc.data <- tbl(IST43.Db, "EQMAGCGeneData")
+
+ist.cancer.sample.ids <- filter(sample.grouping, group_id %in% (filter(group.desc, grouping_class==20) %>% pull(group_id))) %>% pull(sample_id)
+ist.cancer.data <- filter(eqmagc.data, sample_id %in% ist.cancer.sample.ids) %>% collect() 
+
+ist.healthy.sample.ids <- filter(sample.grouping, group_id %in% (filter(group.desc, grouping_class==15) %>% pull(group_id))) %>% pull(sample_id)
+ist.healthy.data <- filter(eqmagc.data, sample_id %in% ist.healthy.sample.ids) %>% collect()                        
+
+combined.ist.data <- left_join(eqmagc.data,sample.grouping, copy=T) %>% left_join(y=group.desc, copy=T) %>% filter(grouping_class==20 | grouping_class==15) %>% group_by(group_id, ensg_index) %>% summarise(mean.xpression = mean(xpression, na.rm = TRUE), n=n()) %>% collect() #%>% show_query()
+
+combined.ist.data.gr.cl <- left_join(combined.ist.data, group.desc)
+```
+
+```{r Perform IST gene ranking}
+excluded.group.ids <- c(15167, 20099, 20103, 20108)
+
+#excluded.group.ids <- c()
+
+top.500.genes.per.tissue <- combined.ist.data.gr.cl %>% filter(n > 6 & !(group_id %in% excluded.group.ids)) %>% group_by(group_id) %>% top_n(500, mean.xpression)
+
+#healthy.genes <- top.500.genes.per.tissue %>% filter(grouping_class==15) %>% group_by(ensg_index) %>% summarise(nn=n()) %>% filter(nn > 1)
+
+#cancer.genes <- top.500.genes.per.tissue %>% filter(grouping_class==20) %>% group_by(ensg_index) %>% summarise(nn=n()) %>% filter(nn > 3)
+
+#excl.list <- tibble(ensg_index=unique(pull(healthy.genes,ensg_index), pull(cancer.genes, ensg_index)))
+
+excl.list <- tibble(ensg_index=unique(pull(top.500.genes.per.tissue,ensg_index)))
+
+excl.list.final <- left_join(excl.list, select(gene.annot,ensg_index, ensg_id, display_id)) %>% distinct()
+```
+
+# Handling FFPE data from Bluebee files
+
+```{r Reading Bluebee htseq count files}
+data.directories <- list.dirs(path = "/Volumes/RaCa/Data/LPS/",recursive = FALSE)
+htseq.counts <- lapply(data.directories, function(d){
+  data.sub.folders <- list.dirs(path = d,recursive = FALSE)
+  htseq.count.folder.i <- str_which(string=data.sub.folders,pattern = "htseq-count.*")
+  ht.seq.count.file <- list.files(data.sub.folders[htseq.count.folder.i])
+  sample.id <- sub(x = ht.seq.count.file, pattern = "\\.fastq.*", replacement = "")
+  htseq.counts.tmp <- read_tsv(file = paste(data.sub.folders[htseq.count.folder.i],ht.seq.count.file,sep="/"), col_names = c("ensg_id","count"), show_col_types = FALSE)
+  htseq.counts.tmp <- tibble(sample_id=sample.id, htseq.counts.tmp)
+  return(htseq.counts.tmp)
+})
+
+# Drop extra LPS36 results folder, seems double for unknown reason
+htseq.counts.tb <- bind_rows(htseq.counts[-126])
+
+# Drop sample with name not starting LPS[:digit:]+
+htseq.counts.tb <- htseq.counts.tb[pull(htseq.counts.tb, sample_id) %>% str_detect(pattern="^LPS[:digit:]+"),]
+
+#htseq.counts.tb$data$sample.id <- htseq.counts.tb$sample.id
+htseq.counts.tb <- spread(htseq.counts.tb, key="sample_id", value="count")
+ensg.id.row.i <- str_which(htseq.counts.tb$ensg_id, pattern = "^ENSG.*")
+```
+
+```{r Reading clinical metadata}
+clin.data <- readxl::read_xlsx("/Users/kilpinen/OneDrive - University of Helsinki/Harri/Liposarcoma/LPS_Masterfile_Samille.xlsx", sheet = "Sheet1", col_names = TRUE)
+```
+
+```{r Filter count data and clinical data to match each other}
+# Samples with clinical metadata
+
+running.sample.number <- str_extract(string=colnames(htseq.counts.tb), pattern="LPS[:digit:]+") %>% str_remove(pattern="^[:alpha:]+")
+
+fastq.names <- colnames(htseq.counts.tb)[-1]
+colnames(htseq.counts.tb) <- c("ensg_id",running.sample.number[-1])
+
+samples.wt.clin.data.i <- which(as.numeric(colnames(htseq.counts.tb)) %in% clin.data$`Juokseva #`)
+htseq.counts.tb.f <- htseq.counts.tb[,c(1,samples.wt.clin.data.i)]
+
+# Move ensg_id to rownames as DESeq2 does support only that
+ensg.ids <- htseq.counts.tb.f$ensg_id
+htseq.counts.df.f <- as.data.frame(htseq.counts.tb.f[,-1])
+rownames(htseq.counts.df.f) <- ensg.ids
+
+# Taking QC values to separate tibble
+htseq.qc <- htseq.counts.df.f[-ensg.id.row.i,]
+htseq.counts.df.f <-htseq.counts.df.f[ensg.id.row.i,]
+
+# Reorder and filter clinical data to match count data
+clin.data.f <- left_join(tibble(running.number=as.numeric(colnames(htseq.counts.tb.f)[-1])), clin.data, by=c(running.number="Juokseva #"))
+
+```
+
+```{r Fetching annotation from AnnotationHub}
+ah <- AnnotationHub()
+orgs <- subset(ah, ah$rdataclass == "OrgDb")
+orgdb <- query(orgs, "Homo sapiens")[[1]]
+ann <- biomaRt::select(orgdb,keys=rownames(htseq.counts.df.f),keytype="ENSEMBL", columns=c("SYMBOL","GENETYPE","GENENAME"))
+
+# Picking only data for genes having genetype=="protein-coding"
+ann.f <- dplyr::filter(ann,ann$GENETYPE=="protein-coding")
+htseq.counts.df.f <- htseq.counts.df.f[unique(ann.f$ENSEMBL),]
+```
+
+```{r Import data into DGElist object}
+
+clin.data.f$three_subtypes <- NA
+clin.data.f$three_subtypes[clin.data.f$`New subtypes` %in% c("dediff-low", "dediff-high")] <- "low-high-dediff"
+clin.data.f$three_subtypes[clin.data.f$`New subtypes` %in% c("myx/rc", "myx")] <- "myx/rc-myx"
+clin.data.f$three_subtypes[clin.data.f$`New subtypes` %in% c("pleo")] <- "pleo"
+
+clin.data.ff <- clin.data.f[!is.na(clin.data.f$three_subtypes),]
+htseq.counts.df.ff <- htseq.counts.df.f[,as.character(clin.data.ff$running.number)]
+
+htseq.counts.dge <- DGEList(htseq.counts.df.ff, group=clin.data.ff$three_subtypes)
+htseq.counts.dge$samples$running_number <- clin.data.ff$running.number
+```
+
+```{r Finding genes to keep based on experimental design groups}
+genes.to.keep <- filterByExpr(htseq.counts.dge)
+```
+
+```{r Adding gene annotation to DGElist}
+gene.ids <- mapIds(org.Hs.eg.db, keys=rownames(htseq.counts.dge), keytype="ENSEMBL", column="SYMBOL")
+htseq.counts.dge$genes <- data.frame(ENSEMBL=rownames(htseq.counts.dge), SYMBOL=gene.ids)
+```
+
+```{r Filtering data object}
+htseq.counts.dge <-htseq.counts.dge[genes.to.keep,]
+```
+
+```{r Calculate log2 counts per million reads}
+logcounts <- edgeR::cpm(htseq.counts.dge,log=TRUE)
+```
+
+```{r Plot log counts, fig.width=14, fig.height=6}
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts),col="blue")
+title("Boxplots of logCPMs")
+```
+
+```{r Calculate outliers in terms of median}
+# +-10% range around median of medians
+median.of.medians <- median(colMedians(logcounts))
+range.10 <- median.of.medians*.10
+accepted.samples <- which(colMedians(logcounts) > median.of.medians-range.10 & colMedians(logcounts) < median.of.medians+range.10)
+```
+
+```{r Dropping samples based on logcount filtering}
+# Dropping samples of which median is more than +-10% outside of median of medians
+# Transforming data to logcounts
+htseq.counts.dge <- htseq.counts.dge[,accepted.samples]
+logcounts <- logcounts[,accepted.samples]
+```
+
+```{r Plot log counts after median filtering, fig.height=6, fig.width=14}
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts),col="blue")
+title("Boxplots of logCPMs after filtering based on median")
+```
+
+```{r Forming eset for further use}
+# htseq.set <- ExpressionSet(assayData = htseq.counts.dge@.Data[[1]], phenoData = AnnotatedDataFrame(data.frame(colnames(htseq.counts.dge@.Data[[1]]),htseq.counts.dge@.Data[[2]])))
+```
+
+```{r DEG test between 1 against two other in all combinations, echo=FALSE}
+htseq.counts.dge <- estimateDisp(htseq.counts.dge)
+
+htseq.counts.dge$samples$group_low.high.dediff_other_two <- ifelse(htseq.counts.dge$samples$group=="low-high-dediff","low-high-dediff","other_two")
+htseq.counts.dge$samples$group_myx.rc.myx_other_two <- ifelse(htseq.counts.dge$samples$group=="myx/rc-myx","myx/rc-myx","other_two")
+htseq.counts.dge$samples$group_pleo_other_two <- ifelse(htseq.counts.dge$samples$group=="pleo","pleo","other_two")
+
+htseq.counts.dge$samples$group <- htseq.counts.dge$samples$group_low.high.dediff_other_two 
+diff.low.high.dediff_other_two <- exactTest(htseq.counts.dge, pair=c("other_two","low-high-dediff"))
+
+htseq.counts.dge$samples$group <- htseq.counts.dge$samples$group_myx.rc.myx_other_two 
+diff.myx.rc.myx_other_two <- exactTest(htseq.counts.dge, pair=c("other_two","myx/rc-myx"))
+
+htseq.counts.dge$samples$group <- htseq.counts.dge$samples$group_pleo_other_two 
+diff.pleo_other_two  <- exactTest(htseq.counts.dge, pair=c("other_two","pleo"))
+```
+
+```{r Formatting DEG results, echo=FALSE}
+DEG.1.tb <- bind_cols(diff.low.high.dediff_other_two$tabl, diff.low.high.dediff_other_two$genes) %>% as_tibble() %>% filter(!(ENSEMBL %in% pull(excl.list.final, ensg_id)) & logFC > 1.5 & PValue < 0.05) %>% arrange(desc(logFC))
+
+DEG.2.tb <- bind_cols(diff.myx.rc.myx_other_two$tabl, diff.myx.rc.myx_other_two$genes) %>% as_tibble() %>% filter(!(ENSEMBL %in% pull(excl.list.final, ensg_id)) & logFC > 1.5 & PValue < 0.05) %>% arrange(desc(logFC))
+  
+DEG.3.tb <- bind_cols(diff.pleo_other_two$tabl, diff.pleo_other_two$genes) %>% as_tibble() %>% filter(!(ENSEMBL %in% pull(excl.list.final, ensg_id)) & logFC > 1.5 & PValue < 0.05) %>% arrange(desc(logFC))
+```
+
+
+--------
+
+# Results {.tabset}
+
+
+## DEG diff low high dediff vs other two
+```{r}
+```
+
+```{r}
+create_dt(DEG.1.tb)
+```
+
+Genes statistically upregulated in diff.low.high.dediff vs other_two and not present in IST based exclusion list
+
+
+## DEG diff myx rc myx vs other two
+
+```{r DEG diff.myx.rc.myx_other_two}
+create_dt(DEG.2.tb)
+```
+
+Genes statistically upregulated in diff.myx.rc.myx vs other_two and not present in IST based exclusion list
+
+## DEG diff pleo vs other two
+
+```{r DEG diff.pleo_other_two}
+create_dt(DEG.3.tb)
+```
+
+Genes statistically upregulated in diff.pleo vs other_two and not present in IST based exclusion list
+
+```{r Samples in the analysis}
+create_dt(as_tibble(htseq.counts.dge$samples) %>% select(running_number, group_low.high.dediff_other_two, group_myx.rc.myx_other_two, group_pleo_other_two))
+```
+
+
+
+# End
+
+```{r Save work image}
+save.image(paste("LPS_DEG_IST",run.date,".Rdata",sep=""))
+```
+
+```{r Session info}
+sessionInfo()
+```
+
