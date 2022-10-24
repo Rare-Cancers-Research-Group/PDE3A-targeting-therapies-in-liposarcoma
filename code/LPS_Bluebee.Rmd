@@ -65,15 +65,7 @@ combined.ist.data.gr.cl <- left_join(combined.ist.data, group.desc)
 ```{r Perform IST gene ranking}
 excluded.group.ids <- c(15167, 20099, 20103, 20108)
 
-#excluded.group.ids <- c()
-
 top.500.genes.per.tissue <- combined.ist.data.gr.cl %>% filter(n > 6 & !(group_id %in% excluded.group.ids)) %>% group_by(group_id) %>% top_n(500, mean.xpression)
-
-#healthy.genes <- top.500.genes.per.tissue %>% filter(grouping_class==15) %>% group_by(ensg_index) %>% summarise(nn=n()) %>% filter(nn > 1)
-
-#cancer.genes <- top.500.genes.per.tissue %>% filter(grouping_class==20) %>% group_by(ensg_index) %>% summarise(nn=n()) %>% filter(nn > 3)
-
-#excl.list <- tibble(ensg_index=unique(pull(healthy.genes,ensg_index), pull(cancer.genes, ensg_index)))
 
 excl.list <- tibble(ensg_index=unique(pull(top.500.genes.per.tissue,ensg_index)))
 
@@ -146,7 +138,6 @@ htseq.counts.df.f <- htseq.counts.df.f[unique(ann.f$ENSEMBL),]
 ```
 
 ```{r Import data into DGElist object}
-
 clin.data.f$three_subtypes <- NA
 clin.data.f$three_subtypes[clin.data.f$`New subtypes` %in% c("dediff-low", "dediff-high")] <- "low-high-dediff"
 clin.data.f$three_subtypes[clin.data.f$`New subtypes` %in% c("myx/rc", "myx")] <- "myx/rc-myx"
