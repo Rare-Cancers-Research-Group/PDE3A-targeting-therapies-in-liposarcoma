@@ -21,7 +21,17 @@ library(umap)
 library(meshes)
 library(RSQLite)
 library(DT)
-source("../../generic code/AuxFunctions.R")
+```
+
+```{r Additional functions}
+create_dt < function(x){
+  DT::datatable(x,
+                extensions = 'Buttons',
+                options = list(dom = 'Blfrtip',
+                               buttons = c('copy', 'csv', 'excel', 'pdf'),
+                               lengthMenu = list(c(10,25,50,-1),
+                                                 c(10,25,50,"All"))))
+}
 ```
 
 ```{r Setting some variables}
