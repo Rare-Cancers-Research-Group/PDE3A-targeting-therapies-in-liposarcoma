@@ -4,9 +4,9 @@ This is code repository supplement for manuscript Toivanen et. al titled ""
 
 ## Project code outline
 1. Fetching IST genedata from sqlite version of IST database.
-  A. Fetch consists of expression of all genes across all healthy and malignant tissue samples except ones primarily consisting adipocytes or liposarcomas. Also at least 6 datapoints are required per tissue type to be included.
-  B. Calculation is then made to find top 500 expressed genes per tissue.
-  C. Exclusion list is formed by finding unique gene ids among all per tissue top 500 expressed genes.
+A. Fetch consists of expression of all genes across all healthy and malignant tissue samples except ones primarily consisting adipocytes or liposarcomas. Also at least 6 datapoints are required per tissue type to be included.
+B. Calculation is then made to find top 500 expressed genes per tissue.
+C. Exclusion list is formed by finding unique gene ids among all per tissue top 500 expressed genes.
 
 2. Processing Bluebee sequenced bulk-RNAseq liposarcoma samples
  A. Basis for analysis here is Quantseq pipeline processed gene level counts per sample
