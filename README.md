@@ -1,4 +1,4 @@
-## PDE3A targeting therapies in liposarcoma
+## Therapeutic opportunity of phosphodiesterase 3A modulators in myxoid liposarcoma
 
 This is code repository supplement for manuscript Toivanen et. al titled "Therapeutic opportunity of phosphodiesterase 3A modulators in myxoid liposarcoma"
 
