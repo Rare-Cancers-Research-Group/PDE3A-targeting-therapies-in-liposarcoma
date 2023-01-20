@@ -1,6 +1,6 @@
 ## PDE3A targeting therapies in liposarcoma
 
-This is code repository supplement for manuscript Toivanen et. al titled "Phosphodiesterase 3A modulators as efficient therapy for myxoid-round cell liposarcoma, synergizing with Bcl-2 family inhibitors"
+This is code repository supplement for manuscript Toivanen et. al titled "Therapeutic opportunity of phosphodiesterase 3A modulators in myxoid liposarcoma"
 
 ## Project code outline
 1. Fetching IST genedata from sqlite version of IST database.<br/>
